@@ -10,7 +10,6 @@ from socketserver import ThreadingMixIn
 from urllib.parse import parse_qs, urlparse
 
 import requests
-from ascii_colors import ASCIIColors
 
 
 def get_config(filename):
@@ -24,7 +23,7 @@ def get_config(filename):
             'models': [model.strip() for model in config[name]['models'].split(',')]
         }
         servers.append((name, server_info))
-    ASCIIColors.green(f"Loaded servers from {filename}: {servers}")
+    print(f"Loaded servers from {filename}: {servers}")
     return servers
 
 # Read the authorized users and their keys from a file
@@ -39,8 +38,8 @@ def get_authorized_users(filename):
             user, key = line.strip().split(':')
             authorized_users[user] = key
         except:
-            ASCIIColors.red(f"User entry broken: {line.strip()}")
-    ASCIIColors.green(f"Loaded authorized users from {filename}: {list(authorized_users.keys())}")
+            print(f"User entry broken: {line.strip()}")
+    print(f"Loaded authorized users from {filename}: {list(authorized_users.keys())}")
     return authorized_users
 
 def main():
@@ -54,8 +53,8 @@ def main():
     servers = get_config(args.config)
     authorized_users = get_authorized_users(args.users_list)
     deactivate_security = args.deactivate_security
-    ASCIIColors.red("Ollama Proxy server")
-    ASCIIColors.red("Author: ParisNeo")
+    print("Ollama Proxy server")
+    print("Author: ParisNeo")
 
     class RequestHandler(BaseHTTPRequestHandler):
         def add_access_log_entry(self, event, user, ip_address, access, server, nb_queued_requests_on_server, error=""):
@@ -120,7 +119,7 @@ def main():
         def proxy(self):
             self.user = "unknown"
             if not deactivate_security and not self._validate_user_and_key():
-                ASCIIColors.red(f'User is not authorized')
+                print('User is not authorized')
                 client_ip, client_port = self.client_address
                 # Extract the bearer token from the headers
                 auth_header = self.headers.get('Authorization')
@@ -144,10 +143,10 @@ def main():
             backend_headers.pop('Authorization', None)
 
             # Log the incoming request
-            ASCIIColors.yellow(f"Incoming request from {client_ip}:{client_port}")
-            ASCIIColors.yellow(f"Request method: {self.command}")
-            ASCIIColors.yellow(f"Request path: {path}")
-            ASCIIColors.yellow(f"Query parameters: {get_params}")
+            print(f"Incoming request from {client_ip}:{client_port}")
+            print(f"Request method: {self.command}")
+            print(f"Request path: {path}")
+            print(f"Query parameters: {get_params}")
 
             if self.command == "POST":
                 content_length = int(self.headers.get('Content-Length', 0))
@@ -156,9 +155,9 @@ def main():
                 try:
                     post_data_str = post_data.decode('utf-8')
                     post_data_dict = json.loads(post_data_str)
-                    ASCIIColors.yellow(f"POST data: {post_data_dict}")
+                    print(f"POST data: {post_data_dict}")
                 except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                    ASCIIColors.red(f"Failed to decode POST data: {e}")
+                    print(f"Failed to decode POST data: {e}")
                     post_data_dict = {}
             else:
                 post_data = None
@@ -169,7 +168,7 @@ def main():
             if not model:
                 model = get_params.get('model', [None])[0]
 
-            ASCIIColors.yellow(f"Extracted model: {model}")
+            print(f"Extracted model: {model}")
 
             # Endpoints that require model-based routing
             model_based_endpoints = ['/api/generate', '/api/chat', '/generate', '/chat']
@@ -180,7 +179,7 @@ def main():
                     self.send_response(400)
                     self.end_headers()
                     self.wfile.write(b"Missing 'model' in request")
-                    ASCIIColors.red("Missing 'model' in request")
+                    print("Missing 'model' in request")
                     return
 
                 # Filter servers that support the requested model
@@ -188,21 +187,21 @@ def main():
 
                 if not available_servers:
                     # No server supports the requested model, use the first server
-                    ASCIIColors.red(f"No servers support model '{model}'. Using default server.")
+                    print(f"No servers support model '{model}'. Using default server.")
                     available_servers = [servers[0]]
                 else:
-                    ASCIIColors.green(f"Available servers for model '{model}': {[s[0] for s in available_servers]}")
+                    print(f"Available servers for model '{model}': {[s[0] for s in available_servers]}")
 
                 # Find the server with the lowest queue size among available_servers
                 min_queued_server = min(available_servers, key=lambda s: s[1]['queue'].qsize())
-                ASCIIColors.green(f"Selected server: {min_queued_server[0]} with queue size {min_queued_server[1]['queue'].qsize()}")
+                print(f"Selected server: {min_queued_server[0]} with queue size {min_queued_server[1]['queue'].qsize()}")
 
                 que = min_queued_server[1]['queue']
                 self.add_access_log_entry(event="gen_request", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
                 que.put_nowait(1)
                 try:
                     # Send request to backend server
-                    ASCIIColors.yellow(f"Forwarding request to {min_queued_server[1]['url'] + path}")
+                    print(f"Forwarding request to {min_queued_server[1]['url'] + path}")
                     response = requests.request(
                         self.command,
                         min_queued_server[1]['url'] + path,
@@ -211,11 +210,11 @@ def main():
                         stream=post_data_dict.get("stream", False),
                         headers=backend_headers
                     )
-                    ASCIIColors.green(f"Received response with status code {response.status_code}")
+                    print(f"Received response with status code {response.status_code}")
                     self._send_response(response)
                 except Exception as ex:
                     self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error=str(ex))
-                    ASCIIColors.red(f"Error forwarding request: {ex}")
+                    print(f"Error forwarding request: {ex}")
                     self.send_response(500)
                     self.end_headers()
                     self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
@@ -226,7 +225,7 @@ def main():
                 # For other endpoints, just mirror the request to the default server
                 default_server = servers[0]
                 try:
-                    ASCIIColors.yellow(f"Forwarding request to default server: {default_server[1]['url'] + path}")
+                    print(f"Forwarding request to default server: {default_server[1]['url'] + path}")
                     response = requests.request(
                         self.command,
                         default_server[1]['url'] + path,
@@ -234,11 +233,11 @@ def main():
                         data=post_data,
                         headers=backend_headers
                     )
-                    ASCIIColors.green(f"Received response with status code {response.status_code}")
+                    print(f"Received response with status code {response.status_code}")
                     self._send_response(response)
                 except Exception as ex:
                     self.add_access_log_entry(event="error", user=self.user, ip_address=client_ip, access="Authorized", server=default_server[0], nb_queued_requests_on_server=-1, error=str(ex))
-                    ASCIIColors.red(f"Error forwarding request to default server: {ex}")
+                    print(f"Error forwarding request to default server: {ex}")
                     self.send_response(500)
                     self.end_headers()
                     self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
