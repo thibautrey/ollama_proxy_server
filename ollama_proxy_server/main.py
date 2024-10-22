@@ -1,10 +1,3 @@
-"""
-project: ollama_proxy_server
-file: main.py
-author: ParisNeo
-description: This is a proxy server that adds a security layer to one or multiple ollama servers and routes the requests to the right server in order to minimize the charge of the server.
-"""
-
 import configparser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -21,7 +14,15 @@ import datetime
 def get_config(filename):
     config = configparser.ConfigParser()
     config.read(filename)
-    return [(name, {'url': config[name]['url'], 'queue': Queue()}) for name in config.sections()]
+    servers = []
+    for name in config.sections():
+        server_info = {
+            'url': config[name]['url'],
+            'queue': Queue(),
+            'models': [model.strip() for model in config[name]['models'].split(',')]
+        }
+        servers.append((name, server_info))
+    return servers
 
 # Read the authorized users and their keys from a file
 def get_authorized_users(filename):
@@ -29,22 +30,20 @@ def get_authorized_users(filename):
         lines = f.readlines()
     authorized_users = {}
     for line in lines:
-        if line=="":
+        if line.strip() == "":
             continue
         try:
             user, key = line.strip().split(':')
             authorized_users[user] = key
         except:
-            ASCIIColors.red(f"User entry broken:{line.strip()}")
+            ASCIIColors.red(f"User entry broken: {line.strip()}")
     return authorized_users
-
-
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default="config.ini", help='Path to the authorized users list')
+    parser.add_argument('--config', default="config.ini", help='Path to the config file')
     parser.add_argument('--log_path', default="access_log.txt", help='Path to the access log file')
-    parser.add_argument('--users_list', default="authorized_users.txt", help='Path to the config file')
+    parser.add_argument('--users_list', default="authorized_users.txt", help='Path to the authorized users list')
     parser.add_argument('--port', type=int, default=8000, help='Port number for the server')
     parser.add_argument('-d', '--deactivate_security', action='store_true', help='Deactivates security')
     args = parser.parse_args()
@@ -67,7 +66,7 @@ def main():
             with open(log_file_path, mode='a', newline='') as csvfile:
                 fieldnames = ['time_stamp', 'event', 'user_name', 'ip_address', 'access', 'server', 'nb_queued_requests_on_server', 'error']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                row = {'time_stamp': str(datetime.datetime.now()), 'event':event, 'user_name': user, 'ip_address': ip_address, 'access': access, 'server': server, 'nb_queued_requests_on_server': nb_queued_requests_on_server, 'error': error}
+                row = {'time_stamp': str(datetime.datetime.now()), 'event': event, 'user_name': user, 'ip_address': ip_address, 'access': access, 'server': server, 'nb_queued_requests_on_server': nb_queued_requests_on_server, 'error': error}
                 writer.writerow(row)
 
         def _send_response(self, response):
@@ -101,8 +100,8 @@ def main():
                 auth_header = self.headers.get('Authorization')
                 if not auth_header or not auth_header.startswith('Bearer '):
                     return False
-                token       = auth_header.split(' ')[1]
-                user, key   = token.split(':')
+                token = auth_header.split(' ')[1]
+                user, key = token.split(':')
                 
                 # Check if the user and key are in the list of authorized users
                 if authorized_users.get(user) == key:
@@ -133,53 +132,94 @@ def main():
             path = url.path
             get_params = parse_qs(url.query) or {}
 
+            client_ip, client_port = self.client_address
+
+            # Prepare headers for the backend request
+            backend_headers = dict(self.headers)
+            # Remove 'Authorization' header
+            backend_headers.pop('Authorization', None)
 
             if self.command == "POST":
-                content_length = int(self.headers['Content-Length'])
+                content_length = int(self.headers.get('Content-Length', 0))
                 post_data = self.rfile.read(content_length)
-                post_params = post_data# parse_qs(post_data.decode('utf-8'))
+                post_data_dict = {}
+                try:
+                    post_data_str = post_data.decode('utf-8')
+                    post_data_dict = json.loads(post_data_str)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
             else:
-                post_params = {}
+                post_data = None
+                post_data_dict = {}
 
+            # Extract model from post_data or get_params
+            model = post_data_dict.get('model')
+            if not model:
+                model = get_params.get('model', [None])[0]
 
-            # Find the server with the lowest number of queue entries.
-            min_queued_server = servers[0]
-            for server in servers:
-                cs = server[1]
-                if cs['queue'].qsize() < min_queued_server[1]['queue'].qsize():
-                    min_queued_server = server
-
-            # Apply the queuing mechanism only for a specific endpoint.
             if path == '/api/generate' or path == '/api/chat':
+                if not model:
+                    # Model is required for these endpoints
+                    self.send_response(400)
+                    self.end_headers()
+                    self.wfile.write(b"Missing 'model' in request")
+                    return
+
+                # Filter servers that support the requested model
+                available_servers = [server for server in servers if model in server[1]['models']]
+
+                if not available_servers:
+                    # No server supports the requested model, use the first server
+                    available_servers = [servers[0]]
+
+                # Find the server with the lowest queue size among available_servers
+                min_queued_server = min(available_servers, key=lambda s: s[1]['queue'].qsize())
+
                 que = min_queued_server[1]['queue']
-                client_ip, client_port = self.client_address
                 self.add_access_log_entry(event="gen_request", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
                 que.put_nowait(1)
                 try:
-                    post_data_dict = {}
-
-                    if isinstance(post_data, bytes):
-                        post_data_str = post_data.decode('utf-8')
-                        post_data_dict = json.loads(post_data_str)
-
-                    response = requests.request(self.command, min_queued_server[1]['url'] + path, params=get_params, data=post_params, stream=post_data_dict.get("stream", False))
+                    # Send request to backend server
+                    response = requests.request(
+                        self.command,
+                        min_queued_server[1]['url'] + path,
+                        params=get_params,
+                        json=post_data_dict if post_data_dict else None,
+                        stream=post_data_dict.get("stream", False),
+                        headers=backend_headers
+                    )
                     self._send_response(response)
                 except Exception as ex:
-                    self.add_access_log_entry(event="gen_error",user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(),error=ex)                    
+                    self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error=str(ex))
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
                 finally:
                     que.get_nowait()
-                    self.add_access_log_entry(event="gen_done",user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())                    
+                    self.add_access_log_entry(event="gen_done", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
             else:
-                # For other endpoints, just mirror the request.
-                response = requests.request(self.command, min_queued_server[1]['url'] + path, params=get_params, data=post_params)
-                self._send_response(response)
+                # For other endpoints, just mirror the request to the default server
+                default_server = servers[0]
+                try:
+                    response = requests.request(
+                        self.command,
+                        default_server[1]['url'] + path,
+                        params=get_params,
+                        data=post_data,
+                        headers=backend_headers
+                    )
+                    self._send_response(response)
+                except Exception as ex:
+                    self.add_access_log_entry(event="error", user=self.user, ip_address=client_ip, access="Authorized", server=default_server[0], nb_queued_requests_on_server=-1, error=str(ex))
+                    self.send_response(500)
+                    self.end_headers()
+                    self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         pass
 
-
     print('Starting server')
-    server = ThreadedHTTPServer(('', args.port), RequestHandler)  # Set the entry port here.
+    server = ThreadedHTTPServer(('', args.port), RequestHandler)
     print(f'Running server on port {args.port}')
     server.serve_forever()
 
