@@ -168,7 +168,7 @@ def main():
             model = post_data_dict.get('model')
             if not model:
                 model = get_params.get('model', [None])[0]
-
+            print(f'Model provided {model}')
             ASCIIColors.yellow(f"Extracted model: {model}")
 
             if path == '/api/generate' or path == '/api/chat':
