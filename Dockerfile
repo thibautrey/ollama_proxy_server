@@ -1,6 +1,6 @@
 FROM python:3.11
 
-RUN chmod 1117 /tmp
+RUN chmod -R 1117 /tmp
 
 # Update packagtes, install necessary tools into the base image, clean up and clone git repository
 RUN apt update \
