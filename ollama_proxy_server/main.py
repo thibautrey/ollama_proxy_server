@@ -168,10 +168,13 @@ def main():
             model = post_data_dict.get('model')
             if not model:
                 model = get_params.get('model', [None])[0]
-            print(f'Model provided {model}')
+
             ASCIIColors.yellow(f"Extracted model: {model}")
 
-            if path == '/api/generate' or path == '/api/chat':
+            # Endpoints that require model-based routing
+            model_based_endpoints = ['/api/generate', '/api/chat', '/generate', '/chat']
+
+            if path in model_based_endpoints:
                 if not model:
                     # Model is required for these endpoints
                     self.send_response(400)
