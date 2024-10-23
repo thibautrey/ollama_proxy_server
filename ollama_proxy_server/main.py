@@ -12,19 +12,30 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 
-def get_config(filename):
+def get_config(filename, default_timeout=300):
     config = configparser.ConfigParser()
     config.read(filename)
     servers = []
     for name in config.sections():
+        try:
+            timeout = int(config[name].get('timeout', default_timeout))
+            if timeout <= 0:
+                print(f"Invalid timeout value for server '{name}'. Using default {default_timeout} seconds.")
+                timeout = default_timeout
+        except ValueError:
+            print(f"Non-integer timeout value for server '{name}'. Using default {default_timeout} seconds.")
+            timeout = default_timeout
+
         server_info = {
             'url': config[name]['url'],
             'queue': Queue(),
-            'models': [model.strip() for model in config[name]['models'].split(',')]
+            'models': [model.strip() for model in config[name]['models'].split(',')],
+            'timeout': timeout  # Added timeout to server info
         }
         servers.append((name, server_info))
     print(f"Loaded servers from {filename}: {servers}")
     return servers
+
 
 # Read the authorized users and their keys from a file
 def get_authorized_users(filename):
@@ -41,6 +52,7 @@ def get_authorized_users(filename):
             print(f"User entry broken: {line.strip()}")
     print(f"Loaded authorized users from {filename}: {list(authorized_users.keys())}")
     return authorized_users
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -197,10 +209,18 @@ def main():
                 print(f"Selected server: {min_queued_server[0]} with queue size {min_queued_server[1]['queue'].qsize()}")
 
                 que = min_queued_server[1]['queue']
-                self.add_access_log_entry(event="gen_request", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
-                que.put_nowait(1)
                 try:
-                    # Send request to backend server
+                    que.put_nowait(1)
+                    self.add_access_log_entry(event="gen_request", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
+                except:
+                    self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error="Queue is full")
+                    self.send_response(503)
+                    self.end_headers()
+                    self.wfile.write(b"Server is busy. Please try again later.")
+                    return
+
+                try:
+                    # Send request to backend server with timeout
                     print(f"Forwarding request to {min_queued_server[1]['url'] + path}")
                     response = requests.request(
                         self.command,
@@ -208,10 +228,17 @@ def main():
                         params=get_params,
                         json=post_data_dict if post_data_dict else None,
                         stream=post_data_dict.get("stream", False),
-                        headers=backend_headers
+                        headers=backend_headers,
+                        timeout=min_queued_server[1]['timeout']  # Applying timeout here
                     )
                     print(f"Received response with status code {response.status_code}")
                     self._send_response(response)
+                except requests.Timeout:
+                    self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error="Request timed out")
+                    print(f"Timeout forwarding request to {min_queued_server[0]}")
+                    self.send_response(504)  # 504 Gateway Timeout
+                    self.end_headers()
+                    self.wfile.write(b"Request timed out. Please try again later.")
                 except Exception as ex:
                     self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error=str(ex))
                     print(f"Error forwarding request: {ex}")
@@ -219,8 +246,11 @@ def main():
                     self.end_headers()
                     self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
                 finally:
-                    que.get_nowait()
-                    self.add_access_log_entry(event="gen_done", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
+                    try:
+                        que.get_nowait()
+                        self.add_access_log_entry(event="gen_done", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
+                    except:
+                        pass
             else:
                 # For other endpoints, just mirror the request to the default server
                 default_server = servers[0]
@@ -231,10 +261,17 @@ def main():
                         default_server[1]['url'] + path,
                         params=get_params,
                         data=post_data,
-                        headers=backend_headers
+                        headers=backend_headers,
+                        timeout=default_server[1]['timeout']  # Applying timeout here
                     )
                     print(f"Received response with status code {response.status_code}")
                     self._send_response(response)
+                except requests.Timeout:
+                    self.add_access_log_entry(event="error", user=self.user, ip_address=client_ip, access="Authorized", server=default_server[0], nb_queued_requests_on_server=default_server[1]['queue'].qsize(), error="Request timed out")
+                    print(f"Timeout forwarding request to default server: {default_server[0]}")
+                    self.send_response(504)  # 504 Gateway Timeout
+                    self.end_headers()
+                    self.wfile.write(b"Request timed out. Please try again later.")
                 except Exception as ex:
                     self.add_access_log_entry(event="error", user=self.user, ip_address=client_ip, access="Authorized", server=default_server[0], nb_queued_requests_on_server=-1, error=str(ex))
                     print(f"Error forwarding request to default server: {ex}")
@@ -243,12 +280,17 @@ def main():
                     self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-        pass
+        daemon_threads = True  # Gracefully handle shutdown
 
     print('Starting server')
     server = ThreadedHTTPServer(('', args.port), RequestHandler)
     print(f'Running server on port {args.port}')
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down the server.")
+        server.server_close()
+
 
 if __name__ == "__main__":
     main()
