@@ -63,18 +63,16 @@ def main():
     parser.add_argument('--retry_attempts', type=int, default=3, help='Number of retry attempts for failed calls')
     parser.add_argument('-d', '--deactivate_security', action='store_true', help='Deactivates security')
     args = parser.parse_args()
-    servers = get_config(args.config)
-    authorized_users = get_authorized_users(args.users_list)
-    deactivate_security = args.deactivate_security
+
     print("Ollama Proxy server")
     print("Author: ParisNeo")
 
     class RequestHandler(BaseHTTPRequestHandler):
         # Class variables to access arguments and servers
         retry_attempts = args.retry_attempts
-        servers = servers
-        authorized_users = authorized_users
-        deactivate_security = deactivate_security
+        servers = get_config(args.config)
+        authorized_users = get_authorized_users(args.users_list)
+        deactivate_security = args.deactivate_security
         log_path = args.log_path
 
         def add_access_log_entry(self, event, user, ip_address, access, server, nb_queued_requests_on_server, error=""):
