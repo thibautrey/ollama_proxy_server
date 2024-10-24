@@ -3,6 +3,7 @@ import configparser
 import csv
 import datetime
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from queue import Queue
@@ -30,14 +31,13 @@ def get_config(filename, default_timeout=300):
             'url': config[name]['url'],
             'queue': Queue(),
             'models': [model.strip() for model in config[name]['models'].split(',')],
-            'timeout': timeout  # Added timeout to server info
+            'timeout': timeout
         }
         servers.append((name, server_info))
     print(f"Loaded servers from {filename}: {servers}")
     return servers
 
 
-# Read the authorized users and their keys from a file
 def get_authorized_users(filename):
     with open(filename, 'r') as f:
         lines = f.readlines()
@@ -60,6 +60,7 @@ def main():
     parser.add_argument('--log_path', default="access_log.txt", help='Path to the access log file')
     parser.add_argument('--users_list', default="authorized_users.txt", help='Path to the authorized users list')
     parser.add_argument('--port', type=int, default=8000, help='Port number for the server')
+    parser.add_argument('--retry_attempts', type=int, default=3, help='Number of retry attempts for failed calls')
     parser.add_argument('-d', '--deactivate_security', action='store_true', help='Deactivates security')
     args = parser.parse_args()
     servers = get_config(args.config)
@@ -69,8 +70,15 @@ def main():
     print("Author: ParisNeo")
 
     class RequestHandler(BaseHTTPRequestHandler):
+        # Class variables to access arguments and servers
+        retry_attempts = args.retry_attempts
+        servers = servers
+        authorized_users = authorized_users
+        deactivate_security = deactivate_security
+        log_path = args.log_path
+
         def add_access_log_entry(self, event, user, ip_address, access, server, nb_queued_requests_on_server, error=""):
-            log_file_path = Path(args.log_path)
+            log_file_path = Path(self.log_path)
 
             if not log_file_path.exists():
                 with open(log_file_path, mode='w', newline='') as csvfile:
@@ -119,7 +127,7 @@ def main():
                 user, key = token.split(':')
 
                 # Check if the user and key are in the list of authorized users
-                if authorized_users.get(user) == key:
+                if self.authorized_users.get(user) == key:
                     self.user = user
                     return True
                 else:
@@ -128,9 +136,39 @@ def main():
             except:
                 return False
 
+        def is_server_available(self, server_info):
+            try:
+                # Attempt to send a HEAD request to the server's URL with a short timeout
+                response = requests.head(server_info['url'], timeout=2)
+                return response.status_code == 200
+            except:
+                return False
+
+        def send_request_with_retries(self, server_info, path, get_params, post_data_dict, backend_headers):
+            for attempt in range(self.retry_attempts):
+                try:
+                    # Send request to backend server with timeout
+                    print(f"Attempt {attempt+1} forwarding request to {server_info['url'] + path}")
+                    response = requests.request(
+                        self.command,
+                        server_info['url'] + path,
+                        params=get_params,
+                        json=post_data_dict if post_data_dict else None,
+                        stream=post_data_dict.get("stream", False),
+                        headers=backend_headers,
+                        timeout=server_info['timeout']
+                    )
+                    print(f"Received response with status code {response.status_code}")
+                    return response
+                except requests.Timeout:
+                    print(f"Timeout on attempt {attempt+1} forwarding request to {server_info['url']}")
+                except Exception as ex:
+                    print(f"Error on attempt {attempt+1} forwarding request: {ex}")
+            return None  # If all attempts failed
+
         def proxy(self):
             self.user = "unknown"
-            if not deactivate_security and not self._validate_user_and_key():
+            if not self.deactivate_security and not self._validate_user_and_key():
                 print('User is not authorized')
                 client_ip, client_port = self.client_address
                 # Extract the bearer token from the headers
@@ -195,89 +233,74 @@ def main():
                     return
 
                 # Filter servers that support the requested model
-                available_servers = [server for server in servers if model in server[1]['models']]
+                available_servers = [server for server in self.servers if model in server[1]['models']]
 
                 if not available_servers:
-                    # No server supports the requested model, use the first server
-                    print(f"No servers support model '{model}'. Using default server.")
-                    available_servers = [servers[0]]
+                    # No server supports the requested model
+                    print(f"No servers support model '{model}'.")
+                    self.send_response(503)
+                    self.end_headers()
+                    self.wfile.write(b"No servers support the requested model.")
+                    return
                 else:
                     print(f"Available servers for model '{model}': {[s[0] for s in available_servers]}")
 
-                # Find the server with the lowest queue size among available_servers
-                min_queued_server = min(available_servers, key=lambda s: s[1]['queue'].qsize())
-                print(f"Selected server: {min_queued_server[0]} with queue size {min_queued_server[1]['queue'].qsize()}")
+                # Try to find an available server
+                response = None
+                while available_servers:
+                    # Find the server with the lowest queue size among available_servers
+                    min_queued_server = min(available_servers, key=lambda s: s[1]['queue'].qsize())
+                    if not self.is_server_available(min_queued_server[1]):
+                        print(f"Server {min_queued_server[0]} is not available.")
+                        available_servers.remove(min_queued_server)
+                        continue
+                    que = min_queued_server[1]['queue']
+                    try:
+                        que.put_nowait(1)
+                        self.add_access_log_entry(event="gen_request", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
+                    except:
+                        self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error="Queue is full")
+                        self.send_response(503)
+                        self.end_headers()
+                        self.wfile.write(b"Server is busy. Please try again later.")
+                        return
 
-                que = min_queued_server[1]['queue']
-                try:
-                    que.put_nowait(1)
-                    self.add_access_log_entry(event="gen_request", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
-                except:
-                    self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error="Queue is full")
+                    try:
+                        # Send request with retries
+                        response = self.send_request_with_retries(min_queued_server[1], path, get_params, post_data_dict, backend_headers)
+                        if response:
+                            self._send_response(response)
+                            break  # Success
+                        else:
+                            # All retries failed, try next server
+                            print(f"All retries failed for server {min_queued_server[0]}")
+                            available_servers.remove(min_queued_server)
+                    finally:
+                        try:
+                            que.get_nowait()
+                            self.add_access_log_entry(event="gen_done", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
+                        except:
+                            pass
+                if not response:
+                    # No server could handle the request
                     self.send_response(503)
                     self.end_headers()
-                    self.wfile.write(b"Server is busy. Please try again later.")
-                    return
-
-                try:
-                    # Send request to backend server with timeout
-                    print(f"Forwarding request to {min_queued_server[1]['url'] + path}")
-                    response = requests.request(
-                        self.command,
-                        min_queued_server[1]['url'] + path,
-                        params=get_params,
-                        json=post_data_dict if post_data_dict else None,
-                        stream=post_data_dict.get("stream", False),
-                        headers=backend_headers,
-                        timeout=min_queued_server[1]['timeout']  # Applying timeout here
-                    )
-                    print(f"Received response with status code {response.status_code}")
-                    self._send_response(response)
-                except requests.Timeout:
-                    self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error="Request timed out")
-                    print(f"Timeout forwarding request to {min_queued_server[0]}")
-                    self.send_response(504)  # 504 Gateway Timeout
-                    self.end_headers()
-                    self.wfile.write(b"Request timed out. Please try again later.")
-                except Exception as ex:
-                    self.add_access_log_entry(event="gen_error", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize(), error=str(ex))
-                    print(f"Error forwarding request: {ex}")
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
-                finally:
-                    try:
-                        que.get_nowait()
-                        self.add_access_log_entry(event="gen_done", user=self.user, ip_address=client_ip, access="Authorized", server=min_queued_server[0], nb_queued_requests_on_server=que.qsize())
-                    except:
-                        pass
+                    self.wfile.write(b"No available servers could handle the request.")
             else:
-                # For other endpoints, just mirror the request to the default server
-                default_server = servers[0]
-                try:
-                    print(f"Forwarding request to default server: {default_server[1]['url'] + path}")
-                    response = requests.request(
-                        self.command,
-                        default_server[1]['url'] + path,
-                        params=get_params,
-                        data=post_data,
-                        headers=backend_headers,
-                        timeout=default_server[1]['timeout']  # Applying timeout here
-                    )
-                    print(f"Received response with status code {response.status_code}")
+                # For other endpoints, mirror the request to the default server with retries
+                default_server = self.servers[0]
+                if not self.is_server_available(default_server[1]):
+                    self.send_response(503)
+                    self.end_headers()
+                    self.wfile.write(b"Default server is not available.")
+                    return
+                response = self.send_request_with_retries(default_server[1], path, get_params, post_data_dict, backend_headers)
+                if response:
                     self._send_response(response)
-                except requests.Timeout:
-                    self.add_access_log_entry(event="error", user=self.user, ip_address=client_ip, access="Authorized", server=default_server[0], nb_queued_requests_on_server=default_server[1]['queue'].qsize(), error="Request timed out")
-                    print(f"Timeout forwarding request to default server: {default_server[0]}")
-                    self.send_response(504)  # 504 Gateway Timeout
+                else:
+                    self.send_response(503)
                     self.end_headers()
-                    self.wfile.write(b"Request timed out. Please try again later.")
-                except Exception as ex:
-                    self.add_access_log_entry(event="error", user=self.user, ip_address=client_ip, access="Authorized", server=default_server[0], nb_queued_requests_on_server=-1, error=str(ex))
-                    print(f"Error forwarding request to default server: {ex}")
-                    self.send_response(500)
-                    self.end_headers()
-                    self.wfile.write(f"Internal server error: {ex}".encode('utf-8'))
+                    self.wfile.write(b"Failed to forward request to default server.")
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True  # Gracefully handle shutdown
