@@ -24,4 +24,4 @@ COPY authorized_users.txt .
 ENTRYPOINT ["ollama_proxy_server"]
 
 # Set command line parameters
-CMD ["--config", "./config.ini", "--users_list", "./authorized_users.txt", "--port", "8080", "-d"]
+CMD ["--config", "./config.ini", "--users_list", "./authorized_users.txt", "--port", "8080"]
