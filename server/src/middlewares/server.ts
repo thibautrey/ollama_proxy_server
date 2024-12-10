@@ -1,5 +1,4 @@
 import { Server } from "@prisma/client";
-
 import { prisma } from "./prismaClient.js";
 
 export async function createServer(
@@ -45,4 +44,50 @@ export async function deleteServer(id: string): Promise<Server> {
 
 export async function listServers(): Promise<Server[]> {
   return prisma.server.findMany({ include: { models: true } });
+}
+
+/**
+ * Associates a model (by name) to a given server if not already associated.
+ * Throws an error if the server or model does not exist.
+ */
+export async function addModelToServer(
+  serverId: string,
+  modelName: string
+): Promise<Server> {
+  // Verify that the model exists
+  const model = await prisma.model.findUnique({
+    // @ts-ignore
+    where: {
+      name: modelName,
+    },
+  });
+  if (!model) {
+    throw new Error(`Model with name "${modelName}" does not exist.`);
+  }
+
+  // Fetch the server and its models
+  const server = await prisma.server.findUnique({
+    where: { id: serverId },
+    include: { models: true },
+  });
+  if (!server) {
+    throw new Error(`Server with ID "${serverId}" does not exist.`);
+  }
+
+  // Check if the model is already associated
+  const isAlreadyAssociated = server.models.some((m) => m.id === model.id);
+  if (isAlreadyAssociated) {
+    return server;
+  }
+
+  // Associate the model
+  return prisma.server.update({
+    where: { id: serverId },
+    data: {
+      models: {
+        connect: { id: model.id },
+      },
+    },
+    include: { models: true },
+  });
 }

@@ -6,6 +6,7 @@ import {
   updateServer,
   deleteServer,
   getServerByUrl,
+  addModelToServer,
 } from "../middlewares/server.js";
 import { listUsers, getUserByUsername } from "../middlewares/user.js";
 
@@ -179,6 +180,34 @@ router.delete("/:id", async (req: any, res: any) => {
     return res
       .status(500)
       .json({ error: err.message || "Failed to delete server" });
+  }
+});
+
+// POST /servers/:id/models - associate a model to a server (only first user)
+router.post("/:id/models", async (req: any, res: any) => {
+  if (!(await canAccessServers(req))) {
+    return res
+      .status(403)
+      .json({ error: "Not authorized to add models to server" });
+  }
+
+  const { id } = req.params;
+  const { modelName } = req.body;
+
+  if (!modelName || typeof modelName !== "string") {
+    return res.status(400).json({ error: "Missing or invalid modelName" });
+  }
+
+  try {
+    const updatedServer = await addModelToServer(id, modelName);
+    return res.status(200).json(updatedServer);
+  } catch (err: any) {
+    if (err.message.includes("does not exist")) {
+      return res.status(404).json({ error: err.message });
+    }
+    return res
+      .status(500)
+      .json({ error: err.message || "Failed to add model to server" });
   }
 });
 
