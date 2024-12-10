@@ -65,11 +65,11 @@ export function configureAiHandler(
   authorizedUsers = newAuthorizedUsers;
   retryAttempts = newRetryAttempts;
   deactivateSecurity = newDeactivateSecurity;
-  console.log("[DEBUG] AI Handler configured");
-  console.log("[DEBUG] Servers:", servers);
-  console.log("[DEBUG] Authorized Users:", authorizedUsers);
-  console.log("[DEBUG] Retry Attempts:", retryAttempts);
-  console.log("[DEBUG] Deactivate Security:", deactivateSecurity);
+  // console.log("[DEBUG] AI Handler configured");
+  // console.log("[DEBUG] Servers:", servers);
+  // console.log("[DEBUG] Authorized Users:", authorizedUsers);
+  // console.log("[DEBUG] Retry Attempts:", retryAttempts);
+  // console.log("[DEBUG] Deactivate Security:", deactivateSecurity);
 }
 
 async function isServerAvailable(serverInfo: ServerInfo): Promise<boolean> {
