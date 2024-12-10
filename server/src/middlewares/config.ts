@@ -29,7 +29,6 @@ async function getConfig(defaultTimeout = 300): Promise<ServersType> {
     return [server.url, serverInfo] as [string, ServerInfo];
   });
 
-  console.log(`Loaded servers from database: `, servers);
   return servers;
 }
 
@@ -45,9 +44,6 @@ async function getAuthorizedUsers(): Promise<AuthorizedUsers> {
     authorizedUsers[user.username] = user.key;
   }
 
-  console.log(
-    `Loaded authorized users from database: ${Object.keys(authorizedUsers)}`
-  );
   return authorizedUsers;
 }
 

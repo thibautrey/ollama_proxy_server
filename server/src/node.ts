@@ -21,8 +21,6 @@ async function refreshData() {
   try {
     servers = await getConfig(); // Fetch servers from database
     authorizedUsers = await getAuthorizedUsers(); // Fetch users from database
-    console.log("Refreshed servers and authorized users from database.");
-
     // Update the AI handler configuration
     configureAiHandler(servers, authorizedUsers, 3, false);
   } catch (err) {
