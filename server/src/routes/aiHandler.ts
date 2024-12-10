@@ -47,7 +47,7 @@ async function isServerAvailable(serverInfo: ServerInfo): Promise<boolean> {
   });
 
   try {
-    const fetchPromise = fetch(serverInfo.url, { method: "HEAD" }).then(
+    const fetchPromise = fetch(serverInfo.url, { method: "GET" }).then(
       (res) => res.ok
     );
     return await Promise.race([fetchPromise, timeoutPromise]);
