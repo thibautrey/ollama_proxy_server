@@ -25,7 +25,7 @@ model Server {
 }
 
 model Model {
-  name     String
+  name     String  @unique
   size     Float // in GB, e.g., 4.5 for 4.5 GB of VRAM
   id       String  @id @default(cuid())
   Server   Server? @relation(fields: [serverId], references: [id])

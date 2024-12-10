@@ -55,8 +55,7 @@ export async function addModelToServer(
   modelName: string
 ): Promise<Server> {
   // Verify that the model exists
-  const model = await prisma.model.findUnique({
-    // @ts-ignore
+  const model = await prisma.model.findFirst({
     where: {
       name: modelName,
     },
