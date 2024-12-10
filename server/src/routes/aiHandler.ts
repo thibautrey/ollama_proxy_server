@@ -166,7 +166,6 @@ export async function handleAiRequest(
     }
 
     const [u, k] = parts;
-    if (!u) return;
     if (authorizedUsers[u] !== k) {
       console.log("User is not authorized");
       // addAccessLogEntry(
@@ -180,7 +179,6 @@ export async function handleAiRequest(
       // );
       res.writeHead(403);
       res.end();
-      return;
     }
     user = `${u}`;
   }
@@ -356,13 +354,11 @@ export async function handleAiRequest(
     }
   } else {
     // Non-model endpoints: Use default server
-    if (!servers[0]) return;
     const [_defaultServerName, defaultServerInfo] = servers[0];
 
     if (!(await isServerAvailable(defaultServerInfo))) {
       res.writeHead(503);
       res.end("Default server is not available.");
-      return;
     }
 
     const response = await sendRequestWithRetries(
