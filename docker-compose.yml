@@ -1,0 +1,16 @@
+services:
+  server:
+    build: ./server
+    image: ollama_proxy_server:latest
+    volumes:
+      - ./db:/db
+    environment:
+      - DATABASE_URL=file:/db/.db.sqlite
+    ports:
+      - "8080:8080"
+
+  ui:
+    build: ./ui
+    image: ollama_ui:latest
+    ports:
+      - "3000:80"

@@ -1,6 +1,4 @@
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import { prisma } from "./prismaClient.js";
 
 /**
  * Fetch servers from the Prisma database and map them to the ServersType format.

@@ -1,5 +1,6 @@
 {
   "devDependencies": {
+    "@types/express": "^5.0.0",
     "@types/ini": "^4.1.1",
     "@types/node": "^22.10.1",
     "prisma": "^6.0.1",
@@ -10,7 +11,13 @@
     "@prisma/client": "^6.0.1",
     "abort-controller": "^3.0.0",
     "commander": "^12.1.0",
+    "express": "^4.21.2",
     "ini": "^5.0.0",
     "node-fetch": "^3.3.2"
-  }
+  },
+  "scripts": {
+    "start": "node dist/node.js",
+    "build": "tsc"
+  },
+  "type": "module"
 }
