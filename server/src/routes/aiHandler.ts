@@ -3,25 +3,53 @@ import { parse as parseUrl } from "url";
 import { parse as parseQuery } from "querystring";
 import fetch, { Response } from "node-fetch";
 
+// Types for clarity
+interface ServerInfo {
+  url: string;
+  models: string[];
+  queue: any[];
+  timeout: number;
+}
+
+type ServersType = Array<[string, ServerInfo]>;
+type AuthorizedUsers = { [key: string]: string };
+type PostData = { [key: string]: any };
+type QueryParams = { [key: string]: string[] };
+
 // We'll receive these values from the main file
 let servers: ServersType = [];
 let authorizedUsers: AuthorizedUsers = {};
 let retryAttempts = 3;
 let deactivateSecurity = false;
 
-async function pump(res, reader) {
+async function pump(
+  res: http.ServerResponse,
+  reader: ReadableStreamDefaultReader<Uint8Array>
+) {
+  console.log("[DEBUG] Starting to pump response to client");
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      console.log(
+        "[DEBUG] No more data from upstream, ending chunked response"
+      );
+      break;
+    }
     if (value) {
       const chunkSize = value.length.toString(16).toUpperCase();
+      console.log(
+        `[DEBUG] Writing chunk of size: ${value.length}, hex size: ${chunkSize}`
+      );
       res.write(chunkSize + "\r\n");
       res.write(value);
       res.write("\r\n");
+    } else {
+      console.log("[DEBUG] Reader returned empty value chunk, continuing...");
     }
   }
   res.write("0\r\n\r\n");
   res.end();
+  console.log("[DEBUG] Finished pumping response");
 }
 
 /**
@@ -37,21 +65,38 @@ export function configureAiHandler(
   authorizedUsers = newAuthorizedUsers;
   retryAttempts = newRetryAttempts;
   deactivateSecurity = newDeactivateSecurity;
+  console.log("[DEBUG] AI Handler configured");
+  console.log("[DEBUG] Servers:", servers);
+  console.log("[DEBUG] Authorized Users:", authorizedUsers);
+  console.log("[DEBUG] Retry Attempts:", retryAttempts);
+  console.log("[DEBUG] Deactivate Security:", deactivateSecurity);
 }
 
 async function isServerAvailable(serverInfo: ServerInfo): Promise<boolean> {
   const timeout = 2000;
 
+  console.log(`[DEBUG] Checking availability of server: ${serverInfo.url}`);
   const timeoutPromise = new Promise<boolean>((resolve) => {
-    setTimeout(() => resolve(false), timeout);
+    setTimeout(() => {
+      console.log("[DEBUG] Availability check timed out");
+      resolve(false);
+    }, timeout);
   });
 
   try {
     const fetchPromise = fetch(serverInfo.url, { method: "GET" }).then(
-      (res) => res.ok
+      (res) => {
+        console.log(`[DEBUG] Availability check response: ${res.status}`);
+        return res.ok;
+      }
     );
-    return await Promise.race([fetchPromise, timeoutPromise]);
-  } catch {
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+    console.log(`[DEBUG] Server ${serverInfo.url} available: ${result}`);
+    return result;
+  } catch (err) {
+    console.log(
+      `[ERROR] Server availability check failed for ${serverInfo.url}: ${err}`
+    );
     return false;
   }
 }
@@ -66,54 +111,81 @@ async function sendRequestWithRetries(
   attempts: number,
   timeout: number
 ): Promise<Response | null> {
+  console.log("[DEBUG] sendRequestWithRetries called");
   const url = new URL(serverInfo.url + fullPath);
 
   // Append query parameters to the URL
-  Object.entries(query).forEach(([key, values]) => {
-    values.forEach((value) => url.searchParams.append(key, value));
-  });
+  for (const [key, values] of Object.entries(query)) {
+    for (const value of values) {
+      url.searchParams.append(key, value);
+    }
+  }
+
+  console.log(`[DEBUG] Final request URL: ${url.toString()}`);
 
   // Create request options
-  const options: RequestInit = {
+  const options = {
     method,
-    // @ts-ignore
     headers: { ...headers },
   };
 
+  // Set request body for applicable methods
   if (["POST", "PUT", "PATCH"].includes(method || "") && postData) {
+    // @ts-ignore
     options.body = JSON.stringify(postData);
     options.headers = {
       ...options.headers,
       "Content-Type": options.headers["Content-Type"] || "application/json",
     };
+    // @ts-ignore
+    console.log("[DEBUG] Request has a POST/PUT/PATCH body:", options.body);
   }
 
   for (let i = 0; i < attempts; i++) {
-    console.log(`Attempt ${i + 1} forwarding request to ${url.href}`);
+    console.log(
+      `[DEBUG] Attempt ${i + 1} of ${attempts} forwarding request to ${
+        url.href
+      }`
+    );
 
     try {
       // @ts-ignore
       const fetchPromise = fetch(url.toString(), options);
-
       const timeoutPromise = new Promise<Response>((_, reject) =>
-        setTimeout(() => reject(new Error("Timeout")), timeout * 1000)
+        setTimeout(() => {
+          console.log(
+            `[DEBUG] Request to ${url.href} timed out after ${timeout}s`
+          );
+          reject(new Error("Timeout"));
+        }, timeout * 1000)
       );
 
-      const response = await Promise.race([fetchPromise, timeoutPromise]);
-
-      console.log(`Received response with status code ${response.status}`);
+      const response = (await Promise.race([
+        fetchPromise,
+        timeoutPromise,
+      ])) as Response;
+      console.log(
+        `[DEBUG] Received response from ${url.href} with status code ${response.status}`
+      );
       return response;
-    } catch (err) {
-      if (err.message === "Timeout") {
+    } catch (err: any) {
+      if (err && err.message === "Timeout") {
         console.log(
-          `Timeout on attempt ${i + 1} forwarding request to ${serverInfo.url}`
+          `[WARN] Timeout on attempt ${i + 1} forwarding request to ${
+            serverInfo.url
+          }`
         );
       } else {
-        console.log(`Error on attempt ${i + 1} forwarding request: ${err}`);
+        console.log(
+          `[ERROR] Error on attempt ${i + 1} forwarding request: ${err}`
+        );
       }
     }
   }
 
+  console.log(
+    "[WARN] All attempts exhausted, returning null from sendRequestWithRetries"
+  );
   return null;
 }
 
@@ -124,12 +196,14 @@ export async function handleAiRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse
 ): Promise<void> {
+  console.log("[DEBUG] Starting handleAiRequest");
   const clientIp = req.socket.remoteAddress;
   const clientPort = req.socket.remotePort;
   let user = "unknown";
 
-  console.log("[DEBUG] Starting handleAiRequest");
   console.log(`[DEBUG] Client: ${clientIp}:${clientPort}`);
+  console.log("[DEBUG] Incoming request headers:", req.headers);
+  console.log(`[DEBUG] Request method: ${req.method}, URL: ${req.url}`);
 
   // Handle authorization if security is not deactivated
   if (!deactivateSecurity) {
@@ -190,11 +264,15 @@ export async function handleAiRequest(
     const body: string = await new Promise((resolve) => {
       let data = "";
       req.on("data", (chunk) => {
+        console.log("[DEBUG] Received chunk of POST data");
         data += chunk;
       });
       req.on("end", () => {
         console.log("[DEBUG] POST body collection complete");
         resolve(data);
+      });
+      req.on("error", (err) => {
+        console.log(`[ERROR] Error receiving POST body: ${err}`);
       });
     });
 
@@ -225,6 +303,7 @@ export async function handleAiRequest(
   const backendHeaders: http.IncomingHttpHeaders = { ...req.headers };
   delete backendHeaders["authorization"];
   delete backendHeaders["host"];
+  console.log("[DEBUG] Backend headers:", backendHeaders);
 
   if (modelBasedEndpoints.includes(pathName)) {
     console.log("[DEBUG] Handling a model-based endpoint.");
@@ -235,8 +314,14 @@ export async function handleAiRequest(
       return;
     }
 
+    console.log("[DEBUG] Filtering servers by requested model");
     let availableServers = servers.filter(([_, info]) =>
       info.models.includes(model!)
+    );
+    console.log(
+      `[DEBUG] Servers supporting model '${model}': ${availableServers
+        .map((s) => s[0])
+        .join(", ")}`
     );
 
     if (availableServers.length === 0) {
@@ -246,28 +331,27 @@ export async function handleAiRequest(
       return;
     }
 
-    console.log(
-      `[DEBUG] Available servers for model '${model}': ${availableServers
-        .map((s) => s[0])
-        .join(", ")}`
-    );
-
     let response: Response | null = null;
 
     // Attempt to find a responding server
     while (availableServers.length > 0) {
       availableServers.sort((a, b) => a[1].queue.length - b[1].queue.length);
       const [serverName, serverInfo] = availableServers[0];
-      console.log(`[DEBUG] Checking server: ${serverName}`);
+      console.log(
+        `[DEBUG] Checking server: ${serverName} at ${serverInfo.url}`
+      );
 
-      if (!(await isServerAvailable(serverInfo))) {
+      const serverAvailable = await isServerAvailable(serverInfo);
+      if (!serverAvailable) {
         console.log(`[WARN] Server ${serverName} is not available.`);
         availableServers.shift();
         continue;
       }
 
       const queue = serverInfo.queue;
-      console.log(`[DEBUG] Adding request to server ${serverName}'s queue`);
+      console.log(
+        `[DEBUG] Adding request to server ${serverName}'s queue (current length: ${queue.length})`
+      );
       queue.push(1);
 
       try {
@@ -282,7 +366,15 @@ export async function handleAiRequest(
           retryAttempts,
           serverInfo.timeout
         );
-        console.log(`[DEBUG] Response received from server ${serverName}`);
+        if (response) {
+          console.log(
+            `[DEBUG] Response received from server ${serverName} with status ${response.status}`
+          );
+        } else {
+          console.log(
+            `[WARN] No response from server ${serverName} after retries`
+          );
+        }
 
         if (response) {
           console.log("[DEBUG] Preparing to stream response to client");
@@ -299,6 +391,7 @@ export async function handleAiRequest(
             }
           });
           headersToSend["Transfer-Encoding"] = "chunked";
+          console.log("[DEBUG] Response headers to client:", headersToSend);
           res.writeHead(response.status, headersToSend);
 
           if (response.body instanceof ReadableStream) {
@@ -309,11 +402,17 @@ export async function handleAiRequest(
             await pump(res, reader);
             console.log("[DEBUG] Finished pumping response to client");
           } else {
-            console.log("[DEBUG] Response body is not a ReadableStream.");
+            console.log(
+              "[DEBUG] Response body is not a ReadableStream, ending response"
+            );
+            const textBody = await response.text();
+            res.end(textBody);
           }
           break;
         } else {
-          console.log(`[WARN] All retries failed for server ${serverName}`);
+          console.log(
+            `[WARN] All retries failed for server ${serverName}, removing from availableServers`
+          );
           availableServers.shift();
         }
       } catch (error: any) {
@@ -323,7 +422,9 @@ export async function handleAiRequest(
         availableServers.shift();
       } finally {
         queue.pop();
-        console.log(`[DEBUG] Removed request from ${serverName}'s queue`);
+        console.log(
+          `[DEBUG] Removed request from ${serverName}'s queue (new length: ${queue.length})`
+        );
       }
     }
 
@@ -335,13 +436,18 @@ export async function handleAiRequest(
       res.end("No available servers could handle the request.");
     } else {
       console.log("[DEBUG] Response successfully sent to client.");
-      res.writeHead(200);
-      res.end(response);
     }
   } else {
     console.log("[DEBUG] Handling a non-model endpoint.");
-    const [_defaultServerName, defaultServerInfo] = servers[0];
+    if (servers.length === 0) {
+      console.log("[WARN] No servers configured.");
+      res.writeHead(503);
+      res.end("No servers configured.");
+      return;
+    }
 
+    const [_defaultServerName, defaultServerInfo] = servers[0];
+    console.log("[DEBUG] Checking default server availability");
     if (!(await isServerAvailable(defaultServerInfo))) {
       console.log("[WARN] Default server is not available.");
       res.writeHead(503);
@@ -363,7 +469,7 @@ export async function handleAiRequest(
 
     if (response) {
       console.log(
-        "[DEBUG] Response received from default server, streaming to client"
+        `[DEBUG] Response received from default server with status ${response.status}`
       );
       const headersToSend: { [key: string]: string } = {};
       response.headers.forEach((value, key) => {
@@ -376,11 +482,12 @@ export async function handleAiRequest(
         }
       });
       headersToSend["Transfer-Encoding"] = "chunked";
+      console.log("[DEBUG] Response headers to client:", headersToSend);
       res.writeHead(response.status, headersToSend);
 
       if (response.body instanceof ReadableStream) {
         console.log(
-          "[DEBUG] Response body is a ReadableStream for default server"
+          "[DEBUG] Response body is a ReadableStream for default server, pumping..."
         );
         const reader = response.body.getReader();
         await pump(res, reader);
@@ -389,8 +496,10 @@ export async function handleAiRequest(
         );
       } else {
         console.log(
-          "[DEBUG] Response body is not a ReadableStream for default server"
+          "[DEBUG] Response body is not a ReadableStream for default server, reading text"
         );
+        const textBody = await response.text();
+        res.end(textBody);
       }
     } else {
       console.log("[WARN] Failed to forward request to default server.");
