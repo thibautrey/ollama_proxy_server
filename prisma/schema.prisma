@@ -1,0 +1,33 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  username String @unique
+  key      String
+  id       String @id @default(cuid())
+}
+
+model Server {
+  url       String  @unique
+  queueSize Int
+  isDefault Boolean
+  models    Model[]
+  id        String  @id @default(cuid())
+}
+
+model Model {
+  name     String
+  size     Float // in GB, e.g., 4.5 for 4.5 GB of VRAM
+  id       String  @id @default(cuid())
+  Server   Server? @relation(fields: [serverId], references: [id])
+  serverId String?
+}
