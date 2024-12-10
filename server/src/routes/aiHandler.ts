@@ -335,6 +335,8 @@ export async function handleAiRequest(
       res.end("No available servers could handle the request.");
     } else {
       console.log("[DEBUG] Response successfully sent to client.");
+      res.writeHead(200);
+      res.end(response);
     }
   } else {
     console.log("[DEBUG] Handling a non-model endpoint.");
