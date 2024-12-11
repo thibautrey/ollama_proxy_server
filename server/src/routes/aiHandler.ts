@@ -245,6 +245,8 @@ export async function handleAiRequest(
     "/api/chat",
     "/generate",
     "/chat",
+    "/chat/completions",
+    "/api/completions",
   ];
 
   // Prepare headers to forward to backend
@@ -299,7 +301,9 @@ export async function handleAiRequest(
         response = await sendRequestWithRetries(
           serverInfo,
           req.method,
-          pathName,
+          pathName
+            .replace("/api/completions", "/api/chat")
+            .replace("chat/completions", "/api/chat"),
           getParams,
           postData,
           backendHeaders,
