@@ -304,8 +304,8 @@ export async function handleAiRequest(
           serverInfo,
           req.method,
           pathName
-            .replace("/api/completions", "/api/chat")
-            .replace("/chat/completions", "/api/chat"),
+            .replace("/api/completions", "/v1/chat/completions")
+            .replace("/chat/completions", "/v1/chat/completions"),
           getParams,
           postData,
           backendHeaders,
