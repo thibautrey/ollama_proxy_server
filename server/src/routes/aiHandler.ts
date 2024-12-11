@@ -303,7 +303,7 @@ export async function handleAiRequest(
           req.method,
           pathName
             .replace("/api/completions", "/api/chat")
-            .replace("chat/completions", "/api/chat"),
+            .replace("/chat/completions", "/api/chat"),
           getParams,
           postData,
           backendHeaders,
