@@ -170,7 +170,9 @@ export async function handleAiRequest(
 
   // Handle authorization if security is not deactivated
   if (!deactivateSecurity) {
-    const authHeader = req.headers["authorization"];
+    const authHeader = req.headers["authorization"]
+      ? req.headers["authorization"]
+      : (req.headers["Authorization"] as string);
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       console.log("[WARN] User is not authorized: Missing Bearer token");
       res.writeHead(403);
